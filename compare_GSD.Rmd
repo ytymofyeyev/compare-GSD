@@ -1,0 +1,345 @@
+---
+output:
+  html_document: default
+  word_document: default
+---
+<!--
+Filename:    compare_GSD_tte.Rmd
+Author(s):   Yevgen Tymofyeyev (ytymofye@its.jnj.com), Michael Grayling
+             (mgraylin@its.jnj.com)
+Version:     0.2.0
+Description: Current template for comparing (adaptive) group-sequential
+             designs.                                                        -->
+
+```{r user defined input, echo = FALSE}
+##### USER DEFINED INPUT #######################################################
+# This block of code is all that needs to be modified by the user to tailor the
+# results to a particular trial
+
+# 1. Set the study's name
+study_name      <- "STUDYNAME"
+
+# 2. Set the unit of time (e.g., months)
+time_unit       <- "mo"
+
+# 3. Set the HR values to compute performance for; these HRs will appear across
+# the x-axis in plots. Setting a large number of HR values is recommended to
+# produce 'smooth' line curves
+hr_grid         <- seq(0.5, 1.1, 0.005)
+
+# 4. Set the one-sided type I error rate
+alpha           <- 0.025
+
+# 5. Set assumptions about the primary time-to-event endpoint used to design the
+# trial
+# - tag:     String prefix to identify (tag) the scenario
+# - eta:     Drop-out hazard
+# - lambdaC: Control arm hazard
+# - hr:      HR assumption
+# Each element of primary_outcome will be crossed with design options to create
+# evaluation scenarios
+primary_outcome <- list(# Scenario 1 (main)
+  list(
+    pref    = "",
+    eta     = -log(1 - 0.05)/12,
+    lambdaC = -log(0.69)/24,
+    hr      = 0.60
+  )
+)  
+
+beta_GSD <- 1-0.903 # type II error for fixed GSD
+
+# 6. Define the designs to compare, each in its own list.
+#    Implemented design classes:
+#      1) "gsd_fixed": Conventional design from {gsDesign}, can be with/without
+#         futility boundary, any number of stages
+#      2) "adaptive_mp": Metha & Pocock (2000); so called promising zone design.
+#         Must have futility boundary, 2-stage design
+#      3) "adaptive_optimal": Optimal 2-stage design by {adoptr} package. Can be
+#         slow and numerically unstable 
+
+design_GSD        <- list(
+  # design's tag
+  tag       = 'GSD without ERE',
+  # treatment arm allocation ratio
+  ratio     = 1,
+  # test.type param for gsDesign()
+  test.type = 4,
+  # information fraction for IAs
+  timing    = c(0.75, 1),
+  # type II error to derive design
+  beta      = 1-0.903,
+  # enrollment duration
+  R         = 24,
+  # enrollment rate
+  gamma     = 540/24,
+  # alpha-spending function
+  sfu       = gsDesign::sfPower,
+  # alpha-spending function parameter (if any)
+  sfupar    = 2,
+  # beta-spending function
+  sfl       = gsDesign::sfPower,
+  # beta-spending function parameter (if any)
+  sflpar    = 10.2
+)
+class(design_GSD) <- "gsd_fixed"
+
+# Define adaptive GSD based 
+design_aGSD      <- design_GSD
+design_aGSD$tag  <- 'Adaptive GSD' 
+# hazard ratio for CP evaluation
+design_aGSD$hrCP <- 0.60
+# maximum allowed number of events increase factor
+design_aGSD$maxinflation <- 1.30
+# "Promising region CP"
+design_aGSD$cpadj <- c(0.001, 0.8)
+# targeted Type II error wh8en adapting sample size
+design_aGSD$betastar <- 0.20
+# combination test (built-in options are: z2Z, z2NC, z2Fisher)
+design_aGSD$z2 <- gsDesign::z2NC
+class(design_aGSD) <- "adaptive_mp"
+
+# define a discrete version of the adaptive GSD
+
+design_aGSD_d <- design_GSD
+design_aGSD_d$tag  <- 'Adaptive GSD (discrete)' 
+ # maximum allowed number of events increase factor
+design_aGSD_d$maxinflation  = 1.30
+# Number of events for Stage 2 is a function of observed at IA z-values
+# using step-wise linear (constant) interpolation
+# assuming right-continuous function ( f = 0 for 'approxfun')
+  
+# z1_mesh_in_f1_e1  = c(  0.7, 1-.Machine$double.eps^.5),
+# I_ratio_to_n2max  = c(  1.0, 0.5),
+  
+design_aGSD_d$z1_mesh_in_f1_e1  <- c(  0, 0.6,   0.68, 0.8   )# increasing moves vertical lines to left
+design_aGSD_d$I_ratio_to_n2max  <- c(  1, 0.925, 0.68, 0.455) # change this to adjust 
+
+# 'method' parameter for 'approxfun', i.e., 'linear' or 'constant'
+design_aGSD_d$approx_method <- "constant"
+# order parameter for gauss_legendre
+design_aGSD_d$order <- 12
+class(design_aGSD_d) <- "adaptive_pwl"
+
+# Combine all specified designs together in a list
+design_spec     <- list(
+  design_GSD,
+  design_aGSD, 
+  design_aGSD_d
+)
+
+##### THE USER SHOULD NOT NEED TO GO PAST THIS POINT ###########################
+```
+
+---
+title: "Operating Characteristics for `r study_name` study design"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    df_print: paged
+    self_contained: true
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, echo = FALSE,
+                      comment  = "#>")
+options(width = 58)
+source_dir <-"."
+source(file.path(source_dir,"R", "utils_compare_GSD.R"))
+source(file.path(source_dir,"R", "utils_adoptr_basic.R"))
+```
+
+```{r main execution, echo = FALSE, warning = FALSE}
+designs <-
+  design_spec |>
+  tidyr::expand_grid(primary_outcome) |>
+  tidyr::unnest_wider(primary_outcome) |>
+  exec_calc(alpha, hr_grid)
+```
+
+## Background
+
+The objective of this report is to provide key operating characteristics for 
+the design of `r study_name` study. 
+
+An two-stage group sequential design (GSD) with an interim analysis (IA) will be implemented to
+allow for early stopping and potential re-estimation of the required number
+of events for the final analysis based upon data after `r designs$gsd[[1]]$n.I[1]` events.
+If the study continues to the final analysis an actual total number of events 
+will be in the range from `r designs$gsd[[1]]$n.I[2]` to 
+`r round(designs$gsd[[1]]$n.I[2] * design_aGSD$maxinflation)`.
+
+__Base GSD summary:__ 
+`r summary(designs$gsd[[1]])`
+
+```{r inputDesign}
+gsDesign::gsBoundSummary(designs$gsd[[1]], ratio = 1, digits = 4, ddigits = 2, tdigits = 1, timename = 'Month') 
+```
+
+
+To mitigate uncertainty about the effect size hazard ratio (HR) an adaptive 
+event re-estimation (ERE) will be implement at the IA.
+The total number of events for the final analysis can be increase 
+depending on the estimate of the effect observed at the IA.
+The maximum allowed increase of the number of events is set to 
+`r (design_aGSD$maxinflation-1)*100`% relative to the base GSD. 
+
+Figures below give specifications for the ERE strategies. 
+The total number of events at the final analysis is plotted against 
+the HR observed at the IA. Equivalently, strategies
+can be expressed on the z-score scale. The corresponding plot is also provided.
+
+Two similar versions of the adaptive ERE strategies are evaluated. 
+The original strategy is driven by conditional power (CP) considerations targeting 
+the value of `r (1-design_aGSD$betastar)*100`% (specifically CP for the final analysis
+given IA data and assuming HR of
+`r design_aGSD$hrCP`). The derived version of ERE strategy (referred to as "discrete")
+is proposed to operationalize logistical implementation of the original strategy.
+As it will be demonstrated in the results section that
+performance of these two strategies are very similar as expected.
+
+## Number of event re-estimation rules {.tabset} 
+
+### Final number of events target by observed at IA HR
+
+```{r events - stage 2 by observed HR, fig.height = 6, fig.width = 8, warning = FALSE, message = FALSE, echo = FALSE}
+plot_events_by_obs_HR(designs)
+```
+
+### Final number of events target by observed at IA z-value
+
+```{r events - stage 2 by observed z-value, fig.height = 6, fig.width = 8, warning = FALSE, message = FALSE, echo = FALSE}
+plot_events_by_obs_z(designs)
+```
+
+## Analysis Method
+
+We consider analysis following a two-stage design with ERE.
+If the study is not terminated at the time of the IA, and ERE
+took place, then the decision at the final analysis is based on the following test on
+accumulated data on both stages.
+Final test statistic $Z_F$, is in the weighted combination form expressed in terms 
+of the one-sided log-rank test statistics $LR_1$ and $LR_2$ as described in Wassmer (2006).
+$LR_2$ is performed on the full analysis set and $LR_1$ is calculated on the interim full analysis set
+$$
+Z_F =  \left( w_1^2+w_2^2\right)^{-1/2} 
+       \left[ w_1 Z_1 + w_2 Z_2^* \right]
+$$
+where, 
+
+$Z_1 = LR_1$,
+
+$Z_2^* = \left( \frac{d_F}{d_F-d_{IA}} \right)^{1/2} LR_2 - \left( \frac{ d_{IA}}{d_F-d_{IA}} \right)^{1/2} LR_1$,
+
+$w_1 = \sqrt `r designs$gsd[[1]]$n.I[1]`$ and $w_2 = \sqrt `r designs$gsd[[1]]$n.I[2] - designs$gsd[[1]]$n.I[1]`$ 
+are the fixed weights (set to a square root values of the planned number of events
+at interim and final analyses in the corresponding base GSD without event re-estimation),
+ 
+and $d_{IA}$ and $d_F$ are the actual resulting number of events at the interim and final 
+analysis, respectively. 
+
+Note that if $d_{IA} = `r designs$gsd[[1]]$n.I[1]`$ and $d_F= `r designs$gsd[[1]]$n.I[2]`$
+(i.e., no re-estimation of the number of events) then $Z_F = LR_2$. 
+
+The control of the Type I error rate is ensured analytically. Decision regions (i.e., the critical cut-off values for $LR_1$ and 
+$Z_F$ test statistics) are derived according to the classical GSD framework, refer to Wassmer (2006). 
+
+## Evaluation of Operation Characteristics
+
+For the two-stage group sequential designs including scenarios with adaptive
+event re-estimation, the key operating characteristics
+such as expected sample size and study duration can be calculated by numerical 
+integration.
+
+Consider the null and alternative hypotheses for the effect of interest $\theta$ 
+$$
+H_0: \theta \le 0, \; H_A: \theta > 0
+$$
+Let $Z_j$ be the Wald statistics at analysis $j =1, 2$. The joint distribution of 
+$(Z_1,Z_2)$ is asymptotically bivariate normal with the corresponding mean values 
+$\theta \sqrt I_j$, 
+where $I_j$ denotes the total statistical information at analysis $j$.
+The efficacy stopping boundary is defined by $e_j$ such that
+$H_0$ is rejected if the observed value of $Z_j > e_j$ at analysis $j=1, 2$.
+The error-spending framework is commonly used to set the boundary that controls
+the Type I error rate at a given $\alpha$ level.
+Also, an early decision of not rejecting $H_0$ 
+(stop early for futility) may be made if $Z_1 < f_1$. The futility rule is non-binding 
+for the purpose of alpha control.
+
+Test statistic $Z_2$ can be expressed as:
+$$Z_2 = \sqrt{I_1/I_2}Z_1+\sqrt{1-I_1/I_2}Z_2^*$$
+where, $Z_2^*$ is the independent incremental Z-statistics. $Z_2^*$ accounts for data 
+observed after the interim analysis. It is normally distributed with the mean $\theta \sqrt{I_2^*}$ 
+and variance 1.
+
+The GSD power function can be written as 
+$$P(I_1, I_2^*,f_1, e_1, e_2) = \Phi\{ \theta \sqrt{I_1} - e_1\} +
+\int_{f_1}^{e_1}\phi(z_1, \theta\sqrt{I_1},1) 
+\Phi\left(  \theta \sqrt{I_2^*} - \frac{ e_2 - \sqrt{I_1/I_2}z_1}{\sqrt{1-I_1/I_2}}) \right)dz_1
+$$
+where $\phi()$ is the standard normal density function, and $\Phi()$ is the standard 
+normal distribution function, e.g., see Pilz et el (2018) for more details.
+The first and second terms in the above expression are the probability of rejecting $H_0$
+at the 1-st and 2-nd analyses, respectively. In the second term the integration is done over the
+possible realization of $Z_1$ that continue the trial to the next analysis.
+
+The power function for a 2-stage adaptive GSD has a similarly form with 
+two modifications (a) $I_2$ becomes a function $I_2(z_1)$ of the observed value 
+$Z_1 = z_1$ (b) $e_2$ have to be replaced by a function of $e_2(z_1)$
+to account for ERE.
+Specifically, $e_2(z_1)$ based on the combination test framework is used
+$$
+e_2(z_1) = \frac{ e_2 - w_1 z_1}{  w_2  } 
+$$
+
+
+The expected information
+$$
+E = I_1 + \int_{f_1}^{e_1}\phi(z_1, \theta\sqrt{I_1},1) I_2^*dz_1
+$$
+
+## Evaluation results {.tabset}
+
+### Power: At IA1
+
+```{r power - at IA1, fig.height = 6, fig.width = 8, warning = FALSE, message = FALSE, echo = FALSE}
+plot_power_ia1(designs, primary_outcome)
+```
+
+### Power: Overall
+
+```{r power - overall, fig.height = 6, fig.width = 8, warning = FALSE, message = FALSE, echo = FALSE}
+plot_power(designs, primary_outcome)
+```
+
+### Duration: To IA1
+
+```{r duration - to IA1, fig.height = 6, fig.width = 8, warning = FALSE, message = FALSE, echo = FALSE}
+plot_duration_ia1(designs, primary_outcome, time_unit)
+```
+
+### Duration: To FA
+
+```{r duration - to FA, fig.height = 6, fig.width = 8, warning = FALSE, message = FALSE, echo = FALSE}
+plot_duration_fa(designs, primary_outcome, time_unit)
+```
+
+### Duration: Expected
+
+```{r duration - expected, fig.height = 6, fig.width = 8, warning = FALSE, message = FALSE, echo = FALSE}
+plot_duration_expected(designs, primary_outcome, time_unit)
+```
+
+### Events: Expected
+
+```{r events - expected, fig.height = 6, fig.width = 8, warning = FALSE, message = FALSE, echo = FALSE}
+plot_events_expected(designs, primary_outcome)
+```
+
+
+## Rererence
+
+Wassmer, G. Planning and analyzing adaptive group sequential survival trials. Biometrical Journal 2006; 48(4): 714-729.
+
+Pilz, M., Kunzmann, K., Herrmann, C., Rauch, G. and Kieser, M. A variational approach to optimal two‐stage designs. Statistics in Medicine 2019; 38(21): 4159-4171.
