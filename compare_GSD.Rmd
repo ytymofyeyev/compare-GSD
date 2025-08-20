@@ -41,13 +41,13 @@ alpha           <- 0.025
 primary_outcome <- list(# Scenario 1 (main)
   list(
     pref    = "",
-    eta     = -log(1 - 0.05)/12,
-    lambdaC = -log(0.69)/24,
+    eta     = -log(1 - 0.05) / 12,
+    lambdaC = -log(0.69) / 24,
     hr      = 0.60
   )
-)  
+)
 
-beta_GSD <- 1-0.903 # type II error for fixed GSD
+beta_GSD <- 1 - 0.903 # type II error for fixed GSD
 
 # 6. Define the designs to compare, each in its own list.
 #    Implemented design classes:
@@ -56,7 +56,7 @@ beta_GSD <- 1-0.903 # type II error for fixed GSD
 #      2) "adaptive_mp": Metha & Pocock (2000); so called promising zone design.
 #         Must have futility boundary, 2-stage design
 #      3) "adaptive_optimal": Optimal 2-stage design by {adoptr} package. Can be
-#         slow and numerically unstable 
+#         slow and numerically unstable
 
 design_GSD        <- list(
   # design's tag
